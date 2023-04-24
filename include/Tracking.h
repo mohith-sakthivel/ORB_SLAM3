@@ -37,6 +37,7 @@
 #include "MapDrawer.h"
 #include "System.h"
 #include "ImuTypes.h"
+#include "Geometry.h"
 
 #include "GeometricCamera.h"
 
@@ -68,9 +69,10 @@ public:
     bool ParseIMUParamFile(cv::FileStorage &fSettings);
 
     // Preprocess the input and call Track(). Extract features and performs stereo matching.
-    cv::Mat GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp, string filename);
-    cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename);
-    cv::Mat GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename);
+    cv::Mat GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const cv::Mat &maskLeft, const cv::Mat &maskRight, const double &timestamp, string filename);
+    cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const cv::Mat &mask, const double &timestamp, string filename);
+    cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const cv::Mat &mask, const double &timestamp, string filename, cv::Mat &imRGBOut, cv::Mat &imDOut, cv::Mat &maskOut);
+    cv::Mat GrabImageMonocular(const cv::Mat &im, const cv::Mat &mask, const double &timestamp, string filename);
     // cv::Mat GrabImageImuMonocular(const cv::Mat &im, const double &timestamp);
 
     void GrabImuData(const IMU::Point &imuMeasurement);
@@ -187,6 +189,9 @@ protected:
     // Main tracking function. It is independent of the input sensor.
     void Track();
 
+    // LightTrack
+    void LightTrack();
+
     // Map initialization for stereo and RGB-D
     void StereoInitialization();
 
@@ -202,7 +207,10 @@ protected:
     bool TrackWithMotionModel();
     bool PredictStateIMU();
 
-    bool Relocalization();
+    // LightTrackWithMotionModel
+    bool LightTrackWithMotionModel(bool &bVO);
+
+    bool Relocalization(int update = 0);
 
     void UpdateLocalMap();
     void UpdateLocalPoints();
@@ -343,6 +351,8 @@ protected:
     int initID, lastID;
 
     cv::Mat mTlr;
+
+    DynaSLAM::Geometry mGeometry;
 
 public:
     cv::Mat mImRight;

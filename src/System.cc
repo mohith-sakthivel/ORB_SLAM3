@@ -20,6 +20,7 @@
 
 #include "System.h"
 #include "Converter.h"
+#include <unistd.h>
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
@@ -148,7 +149,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
 }
 
-cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
+cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const cv::Mat &maskLeft, const cv::Mat &maskRight, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
 {
     if(mSensor!=STEREO && mSensor!=IMU_STEREO)
     {
@@ -201,7 +202,7 @@ cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const
         for(size_t i_imu = 0; i_imu < vImuMeas.size(); i_imu++)
             mpTracker->GrabImuData(vImuMeas[i_imu]);
 
-    cv::Mat Tcw = mpTracker->GrabImageStereo(imLeft,imRight,timestamp,filename);
+    cv::Mat Tcw = mpTracker->GrabImageStereo(imLeft,imRight,maskLeft,maskRight,timestamp,filename);
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;
@@ -211,7 +212,7 @@ cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const
     return Tcw;
 }
 
-cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, string filename)
+cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const cv::Mat &mask, const double &timestamp, cv::Mat &imRGBOut, cv::Mat &imDOut, cv::Mat &maskOut, string filename)
 {
     if(mSensor!=RGBD)
     {
@@ -260,7 +261,7 @@ cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const doub
     }
 
 
-    cv::Mat Tcw = mpTracker->GrabImageRGBD(im,depthmap,timestamp,filename);
+    cv::Mat Tcw = mpTracker->GrabImageRGBD(im,depthmap,mask,timestamp,filename,imRGBOut,imDOut, maskOut);
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;
@@ -269,7 +270,67 @@ cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const doub
     return Tcw;
 }
 
-cv::Mat System::TrackMonocular(const cv::Mat &im, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
+
+cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const cv::Mat &mask, const double &timestamp, string filename)
+{
+    if(mSensor!=RGBD)
+    {
+        cerr << "ERROR: you called TrackRGBD but input sensor was not set to RGBD." << endl;
+        exit(-1);
+    }    
+
+    // Check mode change
+    {
+        unique_lock<mutex> lock(mMutexMode);
+        if(mbActivateLocalizationMode)
+        {
+            mpLocalMapper->RequestStop();
+
+            // Wait until Local Mapping has effectively stopped
+            while(!mpLocalMapper->isStopped())
+            {
+                usleep(1000);
+            }
+
+            mpTracker->InformOnlyTracking(true);
+            mbActivateLocalizationMode = false;
+        }
+        if(mbDeactivateLocalizationMode)
+        {
+            mpTracker->InformOnlyTracking(false);
+            mpLocalMapper->Release();
+            mbDeactivateLocalizationMode = false;
+        }
+    }
+
+    // Check reset
+    {
+        unique_lock<mutex> lock(mMutexReset);
+        if(mbReset)
+        {
+            mpTracker->Reset();
+            mbReset = false;
+            mbResetActiveMap = false;
+        }
+        else if(mbResetActiveMap)
+        {
+            mpTracker->ResetActiveMap();
+            mbResetActiveMap = false;
+        }
+    }
+
+
+    cv::Mat Tcw = mpTracker->GrabImageRGBD(im,depthmap,mask,timestamp,filename);
+
+    unique_lock<mutex> lock2(mMutexState);
+    mTrackingState = mpTracker->mState;
+    mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
+    mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
+    return Tcw;
+}
+
+
+cv::Mat System::TrackMonocular(const cv::Mat &im, const cv::Mat &mask, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
 {
     if(mSensor!=MONOCULAR && mSensor!=IMU_MONOCULAR)
     {
@@ -322,7 +383,7 @@ cv::Mat System::TrackMonocular(const cv::Mat &im, const double &timestamp, const
         for(size_t i_imu = 0; i_imu < vImuMeas.size(); i_imu++)
             mpTracker->GrabImuData(vImuMeas[i_imu]);
 
-    cv::Mat Tcw = mpTracker->GrabImageMonocular(im,timestamp,filename);
+    cv::Mat Tcw = mpTracker->GrabImageMonocular(im,mask,timestamp,filename);
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;

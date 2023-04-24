@@ -20,9 +20,11 @@
 #include<algorithm>
 #include<fstream>
 #include<chrono>
-
+#include <unistd.h>
 #include<opencv2/core/core.hpp>
 
+#include "Geometry.h"
+#include "MaskNet.h"
 #include<System.h>
 
 using namespace std;
@@ -32,9 +34,9 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
 
 int main(int argc, char **argv)
 {
-    if(argc != 5)
+    if(argc != 5 && argc != 6 && argc != 7)
     {
-        cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association" << endl;
+        cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association (path_to_masks) (path_to_output)" << endl;
         return 1;
     }
 
@@ -47,6 +49,7 @@ int main(int argc, char **argv)
 
     // Check consistency in the number of images and depthmaps
     int nImages = vstrImageFilenamesRGB.size();
+    std::cout << "nImages: " << nImages << std::endl;
     if(vstrImageFilenamesRGB.empty())
     {
         cerr << endl << "No images found in provided path." << endl;
@@ -58,6 +61,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // Initialize Mask R-CNN
+    DynaSLAM::SegmentDynObject *MaskNet;
+    if (argc==6 || argc==7)
+    {
+        cout << "Loading Mask R-CNN. This could take a while..." << endl;
+        MaskNet = new DynaSLAM::SegmentDynObject();
+        cout << "Mask R-CNN loaded!" << endl;
+    }
+
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
     ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,true);
 
@@ -65,8 +77,28 @@ int main(int argc, char **argv)
     vector<float> vTimesTrack;
     vTimesTrack.resize(nImages);
 
+    // Dilation settings
+    int dilation_size = 15;
+    cv::Mat kernel = getStructuringElement(cv::MORPH_ELLIPSE,
+                                           cv::Size( 2*dilation_size + 1, 2*dilation_size+1 ),
+                                           cv::Point( dilation_size, dilation_size ) );
+
+    if (argc==7)
+    {
+        std::string dir = string(argv[6]);
+        mkdir(dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+        dir = string(argv[6]) + "/rgb/";
+        mkdir(dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+        dir = string(argv[6]) + "/depth/";
+        mkdir(dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+        dir = string(argv[6]) + "/mask/";
+        mkdir(dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    }
+
     // Main loop
     cv::Mat imRGB, imD;
+    cv::Mat imRGBOut, imDOut,maskOut;
+
     for(int ni=0; ni<nImages; ni++)
     {
         // Read image and depthmap from file
@@ -86,15 +118,34 @@ int main(int argc, char **argv)
 #else
         std::chrono::monotonic_clock::time_point t1 = std::chrono::monotonic_clock::now();
 #endif
+        // Segment out the images
+        cv::Mat mask = cv::Mat::ones(480,640,CV_8U);
+        if (argc == 6 || argc == 7)
+        {
+            cv::Mat maskRCNN;
+            maskRCNN = MaskNet->GetSegmentation(imRGB,string(argv[5]),vstrImageFilenamesRGB[ni].replace(0,4,""));
+            cv::Mat maskRCNNdil = maskRCNN.clone();
+            cv::dilate(maskRCNN,maskRCNNdil, kernel);
+            mask = mask - maskRCNNdil;
+        }
 
         // Pass the image to the SLAM system
-        SLAM.TrackRGBD(imRGB,imD,tframe);
+        if (argc == 7){SLAM.TrackRGBD(imRGB,imD,mask,tframe,imRGBOut,imDOut,maskOut);}
+        else SLAM.TrackRGBD(imRGB,imD,mask,tframe);
 
 #ifdef COMPILEDWITHC11
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 #else
         std::chrono::monotonic_clock::time_point t2 = std::chrono::monotonic_clock::now();
 #endif
+
+        if (argc == 7)
+        {
+            cv::imwrite(string(argv[6]) + "/rgb/" + vstrImageFilenamesRGB[ni],imRGBOut);
+            vstrImageFilenamesD[ni].replace(0,6,"");
+            cv::imwrite(string(argv[6]) + "/depth/" + vstrImageFilenamesD[ni],imDOut);
+            cv::imwrite(string(argv[6]) + "/mask/" + vstrImageFilenamesRGB[ni],maskOut);
+        }
 
         double ttrack= std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
 

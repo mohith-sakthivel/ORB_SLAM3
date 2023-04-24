@@ -132,7 +132,7 @@ void Viewer::Run()
     mbFinished = false;
     mbStopped = false;
 
-    pangolin::CreateWindowAndBind("ORB-SLAM3: Map Viewer",1024,768);
+    pangolin::CreateWindowAndBind("DynaSLAM: Map Viewer",1024,768);
 
     // 3D Mouse handler requires depth testing to be enabled
     glEnable(GL_DEPTH_TEST);
@@ -169,7 +169,7 @@ void Viewer::Run()
     Ow.SetIdentity();
     pangolin::OpenGlMatrix Twwp; // Oriented with g in the z axis, but y and x from camera
     Twwp.SetIdentity();
-    cv::namedWindow("ORB-SLAM3: Current Frame");
+    cv::namedWindow("DynaSLAM: Current Frame");
 
     bool bFollow = true;
     bool bLocalizationMode = false;
@@ -270,7 +270,7 @@ void Viewer::Run()
             toShow = im;
         }
 
-        cv::imshow("ORB-SLAM3: Current Frame",toShow);
+        cv::imshow("DynaSLAM: Current Frame",toShow);
         cv::waitKey(mT);
 
         if(menuReset)

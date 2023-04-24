@@ -61,10 +61,10 @@ Frame::Frame(const Frame &frame)
      mDescriptors(frame.mDescriptors.clone()), mDescriptorsRight(frame.mDescriptorsRight.clone()),
      mvpMapPoints(frame.mvpMapPoints), mvbOutlier(frame.mvbOutlier), mImuCalib(frame.mImuCalib), mnCloseMPs(frame.mnCloseMPs),
      mpImuPreintegrated(frame.mpImuPreintegrated), mpImuPreintegratedFrame(frame.mpImuPreintegratedFrame), mImuBias(frame.mImuBias),
-     mnId(frame.mnId), mpReferenceKF(frame.mpReferenceKF), mnScaleLevels(frame.mnScaleLevels),
-     mfScaleFactor(frame.mfScaleFactor), mfLogScaleFactor(frame.mfLogScaleFactor),
-     mvScaleFactors(frame.mvScaleFactors), mvInvScaleFactors(frame.mvInvScaleFactors), mNameFile(frame.mNameFile), mnDataset(frame.mnDataset),
-     mvLevelSigma2(frame.mvLevelSigma2), mvInvLevelSigma2(frame.mvInvLevelSigma2), mpPrevFrame(frame.mpPrevFrame), mpLastKeyFrame(frame.mpLastKeyFrame), mbImuPreintegrated(frame.mbImuPreintegrated), mpMutexImu(frame.mpMutexImu),
+     mnId(frame.mnId), mpReferenceKF(frame.mpReferenceKF), mnScaleLevels(frame.mnScaleLevels), mImRGB(frame.mImRGB),
+     mfScaleFactor(frame.mfScaleFactor), mfLogScaleFactor(frame.mfLogScaleFactor), mImGray(frame.mImGray),
+     mvScaleFactors(frame.mvScaleFactors), mvInvScaleFactors(frame.mvInvScaleFactors),mImMask(frame.mImMask), mNameFile(frame.mNameFile), mnDataset(frame.mnDataset),
+     mvLevelSigma2(frame.mvLevelSigma2), mvInvLevelSigma2(frame.mvInvLevelSigma2), mIsKeyFrame(frame.mIsKeyFrame),mImDepth(frame.mImDepth), mpPrevFrame(frame.mpPrevFrame), mpLastKeyFrame(frame.mpLastKeyFrame), mbImuPreintegrated(frame.mbImuPreintegrated), mpMutexImu(frame.mpMutexImu),
      mpCamera(frame.mpCamera), mpCamera2(frame.mpCamera2), Nleft(frame.Nleft), Nright(frame.Nright),
      monoLeft(frame.monoLeft), monoRight(frame.monoRight), mvLeftToRightMatch(frame.mvLeftToRightMatch),
      mvRightToLeftMatch(frame.mvRightToLeftMatch), mvStereo3Dpoints(frame.mvStereo3Dpoints),
@@ -95,7 +95,7 @@ Frame::Frame(const Frame &frame)
 }
 
 
-Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeStamp, ORBextractor* extractorLeft, ORBextractor* extractorRight, ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera, Frame* pPrevF, const IMU::Calib &ImuCalib)
+Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const cv::Mat &maskLeft, const cv::Mat &maskRight, const double &timeStamp, ORBextractor* extractorLeft, ORBextractor* extractorRight, ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera, Frame* pPrevF, const IMU::Calib &ImuCalib)
     :mpcpi(NULL), mpORBvocabulary(voc),mpORBextractorLeft(extractorLeft),mpORBextractorRight(extractorRight), mTimeStamp(timeStamp), mK(K.clone()), mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),
      mImuCalib(ImuCalib), mpImuPreintegrated(NULL), mpPrevFrame(pPrevF),mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbImuPreintegrated(false),
      mpCamera(pCamera) ,mpCamera2(nullptr)
@@ -126,6 +126,50 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
     mTimeORB_Ext = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndExtORB - time_StartExtORB).count();
 #endif
 
+     // Delete those ORB points that fall in Mask borders (Included by Berta)
+    cv::Mat MaskLeft_dil = maskLeft.clone();
+    cv::Mat MaskRight_dil = maskRight.clone();
+    int dilation_size = 15;
+    cv::Mat kernel = getStructuringElement(cv::MORPH_ELLIPSE,
+                                        cv::Size( 2*dilation_size + 1, 2*dilation_size+1 ),
+                                        cv::Point( dilation_size, dilation_size ) );
+    cv::erode(maskLeft, MaskLeft_dil, kernel);
+    cv::erode(maskRight, MaskRight_dil, kernel);
+
+    if(mvKeys.empty())
+        return;
+
+    std::vector<cv::KeyPoint> _mvKeys;
+    cv::Mat _mDescriptors;
+
+    for (size_t i(0); i < mvKeys.size(); ++i)
+    {
+        int val = (int)MaskLeft_dil.at<uchar>(mvKeys[i].pt.y,mvKeys[i].pt.x);
+        if (val == 1)
+        {
+            _mvKeys.push_back(mvKeys[i]);
+            _mDescriptors.push_back(mDescriptors.row(i));
+        }
+    }
+
+    mvKeys = _mvKeys;
+    mDescriptors = _mDescriptors;
+
+    std::vector<cv::KeyPoint> _mvKeysRight;
+    cv::Mat _mDescriptorsRight;
+
+    for (size_t i(0); i < mvKeysRight.size(); ++i)
+    {
+        int val = (int)MaskRight_dil.at<uchar>(mvKeysRight[i].pt.y,mvKeysRight[i].pt.x);
+        if (val == 1)
+        {
+            _mvKeysRight.push_back(mvKeysRight[i]);
+            _mDescriptorsRight.push_back(mDescriptorsRight.row(i));
+        }
+    }
+
+    mvKeysRight = _mvKeysRight;
+    mDescriptorsRight = _mDescriptorsRight;
 
     N = mvKeys.size();
     if(mvKeys.empty())
@@ -198,9 +242,9 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
     monoRight = -1;
 }
 
-Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera,Frame* pPrevF, const IMU::Calib &ImuCalib)
-    :mpcpi(NULL),mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),
-     mTimeStamp(timeStamp), mK(K.clone()),mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),
+Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const cv::Mat &imMask, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera,Frame* pPrevF, const IMU::Calib &ImuCalib)
+    :mpcpi(NULL),mImMask(imMask),mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),mImGray(imGray),
+     mTimeStamp(timeStamp), mK(K.clone()),mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),mIsKeyFrame(false), mImDepth(imDepth),
      mImuCalib(ImuCalib), mpImuPreintegrated(NULL), mpPrevFrame(pPrevF), mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbImuPreintegrated(false),
      mpCamera(pCamera),mpCamera2(nullptr)
 {
@@ -226,6 +270,33 @@ Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeSt
 
     mTimeORB_Ext = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndExtORB - time_StartExtORB).count();
 #endif
+
+    // Delete those ORB points that fall in Mask borders (Included by Berta)
+    cv::Mat Mask_dil = imMask.clone();
+    int dilation_size = 15;
+    cv::Mat kernel = getStructuringElement(cv::MORPH_ELLIPSE,
+                                        cv::Size( 2*dilation_size + 1, 2*dilation_size+1 ),
+                                        cv::Point( dilation_size, dilation_size ) );
+    cv::erode(imMask, Mask_dil, kernel);
+
+    if(mvKeys.empty())
+        return;
+
+    std::vector<cv::KeyPoint> _mvKeys;
+    cv::Mat _mDescriptors;
+
+    for (size_t i(0); i < mvKeys.size(); ++i)
+    {
+        int val = (int)Mask_dil.at<uchar>(mvKeys[i].pt.y,mvKeys[i].pt.x);
+        if (val == 1)
+        {
+            _mvKeys.push_back(mvKeys[i]);
+            _mDescriptors.push_back(mDescriptors.row(i));
+        }
+    }
+
+    mvKeys = _mvKeys;
+    mDescriptors = _mDescriptors;
 
 
     N = mvKeys.size();
@@ -281,7 +352,117 @@ Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeSt
 }
 
 
-Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame* pPrevF, const IMU::Calib &ImuCalib)
+Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const cv::Mat &imMask, const cv::Mat &imRGB, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera,Frame* pPrevF, const IMU::Calib &ImuCalib)
+    :mpcpi(NULL),mImMask(imMask),mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),mImGray(imGray),
+     mTimeStamp(timeStamp), mK(K.clone()),mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),mIsKeyFrame(false), mImDepth(imDepth), mImRGB(imRGB),
+     mImuCalib(ImuCalib), mpImuPreintegrated(NULL), mpPrevFrame(pPrevF), mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbImuPreintegrated(false),
+     mpCamera(pCamera),mpCamera2(nullptr)
+{
+    // Frame ID
+    mnId=nNextId++;
+
+    // Scale Level Info
+    mnScaleLevels = mpORBextractorLeft->GetLevels();
+    mfScaleFactor = mpORBextractorLeft->GetScaleFactor();
+    mfLogScaleFactor = log(mfScaleFactor);
+    mvScaleFactors = mpORBextractorLeft->GetScaleFactors();
+    mvInvScaleFactors = mpORBextractorLeft->GetInverseScaleFactors();
+    mvLevelSigma2 = mpORBextractorLeft->GetScaleSigmaSquares();
+    mvInvLevelSigma2 = mpORBextractorLeft->GetInverseScaleSigmaSquares();
+
+    // ORB extraction
+#ifdef REGISTER_TIMES
+    std::chrono::steady_clock::time_point time_StartExtORB = std::chrono::steady_clock::now();
+#endif
+    ExtractORB(0,imGray,0,0);
+#ifdef REGISTER_TIMES
+    std::chrono::steady_clock::time_point time_EndExtORB = std::chrono::steady_clock::now();
+
+    mTimeORB_Ext = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndExtORB - time_StartExtORB).count();
+#endif
+
+    // Delete those ORB points that fall in Mask borders (Included by Berta)
+    cv::Mat Mask_dil = imMask.clone();
+    int dilation_size = 15;
+    cv::Mat kernel = getStructuringElement(cv::MORPH_ELLIPSE,
+                                        cv::Size( 2*dilation_size + 1, 2*dilation_size+1 ),
+                                        cv::Point( dilation_size, dilation_size ) );
+    cv::erode(imMask, Mask_dil, kernel);
+
+    if(mvKeys.empty())
+        return;
+
+    std::vector<cv::KeyPoint> _mvKeys;
+    cv::Mat _mDescriptors;
+
+    for (size_t i(0); i < mvKeys.size(); ++i)
+    {
+        int val = (int)Mask_dil.at<uchar>(mvKeys[i].pt.y,mvKeys[i].pt.x);
+        if (val == 1)
+        {
+            _mvKeys.push_back(mvKeys[i]);
+            _mDescriptors.push_back(mDescriptors.row(i));
+        }
+    }
+
+    mvKeys = _mvKeys;
+    mDescriptors = _mDescriptors;
+
+
+    N = mvKeys.size();
+
+    if(mvKeys.empty())
+        return;
+
+    UndistortKeyPoints();
+
+    ComputeStereoFromRGBD(imDepth);
+
+    mvpMapPoints = vector<MapPoint*>(N,static_cast<MapPoint*>(NULL));
+
+    mmProjectPoints.clear();// = map<long unsigned int, cv::Point2f>(N, static_cast<cv::Point2f>(NULL));
+    mmMatchedInImage.clear();
+
+    mvbOutlier = vector<bool>(N,false);
+
+    // This is done only for the first Frame (or after a change in the calibration)
+    if(mbInitialComputations)
+    {
+        ComputeImageBounds(imGray);
+
+        mfGridElementWidthInv=static_cast<float>(FRAME_GRID_COLS)/static_cast<float>(mnMaxX-mnMinX);
+        mfGridElementHeightInv=static_cast<float>(FRAME_GRID_ROWS)/static_cast<float>(mnMaxY-mnMinY);
+
+        fx = K.at<float>(0,0);
+        fy = K.at<float>(1,1);
+        cx = K.at<float>(0,2);
+        cy = K.at<float>(1,2);
+        invfx = 1.0f/fx;
+        invfy = 1.0f/fy;
+
+        mbInitialComputations=false;
+    }
+
+    mb = mbf/fx;
+
+    mpMutexImu = new std::mutex();
+
+    //Set no stereo fisheye information
+    Nleft = -1;
+    Nright = -1;
+    mvLeftToRightMatch = vector<int>(0);
+    mvRightToLeftMatch = vector<int>(0);
+    mTlr = cv::Mat(3,4,CV_32F);
+    mTrl = cv::Mat(3,4,CV_32F);
+    mvStereo3Dpoints = vector<cv::Mat>(0);
+    monoLeft = -1;
+    monoRight = -1;
+
+    AssignFeaturesToGrid();
+}
+
+
+Frame::Frame(const cv::Mat &imGray, const cv::Mat &mask, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame* pPrevF, const IMU::Calib &ImuCalib)
     :mpcpi(NULL),mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),
      mTimeStamp(timeStamp), mK(static_cast<Pinhole*>(pCamera)->toK()), mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),
      mImuCalib(ImuCalib), mpImuPreintegrated(NULL),mpPrevFrame(pPrevF),mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbImuPreintegrated(false), mpCamera(pCamera),
@@ -309,6 +490,33 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
 
     mTimeORB_Ext = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndExtORB - time_StartExtORB).count();
 #endif
+
+    // Delete those ORB points that fall in mask borders
+    cv::Mat Mask_dil = mask.clone();
+    int dilation_size = 15;
+    cv::Mat kernel = getStructuringElement(cv::MORPH_ELLIPSE,
+                                        cv::Size( 2*dilation_size + 1, 2*dilation_size+1 ),
+                                        cv::Point( dilation_size, dilation_size ) );
+    cv::erode(mask, Mask_dil, kernel);
+
+    if(mvKeys.empty())
+        return;
+
+    std::vector<cv::KeyPoint> _mvKeys;
+    cv::Mat _mDescriptors;
+
+    for (size_t i(0); i < mvKeys.size(); ++i)
+    {
+        int val = (int)Mask_dil.at<uchar>(mvKeys[i].pt.y,mvKeys[i].pt.x);
+        if (val == 1)
+        {
+            _mvKeys.push_back(mvKeys[i]);
+            _mDescriptors.push_back(mDescriptors.row(i));
+        }
+    }
+
+    mvKeys = _mvKeys;
+    mDescriptors = _mDescriptors;
 
 
     N = mvKeys.size();
@@ -1018,7 +1226,7 @@ void Frame::setIntegrated()
     mbImuPreintegrated = true;
 }
 
-Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeStamp, ORBextractor* extractorLeft, ORBextractor* extractorRight, ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera, GeometricCamera* pCamera2, cv::Mat& Tlr,Frame* pPrevF, const IMU::Calib &ImuCalib)
+Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const cv::Mat &maskLeft, const cv::Mat &maskRight, const double &timeStamp, ORBextractor* extractorLeft, ORBextractor* extractorRight, ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera, GeometricCamera* pCamera2, cv::Mat& Tlr,Frame* pPrevF, const IMU::Calib &ImuCalib)
         :mpcpi(NULL), mpORBvocabulary(voc),mpORBextractorLeft(extractorLeft),mpORBextractorRight(extractorRight), mTimeStamp(timeStamp), mK(K.clone()), mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),
          mImuCalib(ImuCalib), mpImuPreintegrated(NULL), mpPrevFrame(pPrevF),mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbImuPreintegrated(false), mpCamera(pCamera), mpCamera2(pCamera2), mTlr(Tlr)
 {
@@ -1050,6 +1258,51 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
 
     mTimeORB_Ext = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndExtORB - time_StartExtORB).count();
 #endif
+
+     // Delete those ORB points that fall in Mask borders (Included by Berta)
+    cv::Mat MaskLeft_dil = maskLeft.clone();
+    cv::Mat MaskRight_dil = maskRight.clone();
+    int dilation_size = 15;
+    cv::Mat kernel = getStructuringElement(cv::MORPH_ELLIPSE,
+                                        cv::Size( 2*dilation_size + 1, 2*dilation_size+1 ),
+                                        cv::Point( dilation_size, dilation_size ) );
+    cv::erode(maskLeft, MaskLeft_dil, kernel);
+    cv::erode(maskRight, MaskRight_dil, kernel);
+
+    if(mvKeys.empty())
+        return;
+
+    std::vector<cv::KeyPoint> _mvKeys;
+    cv::Mat _mDescriptors;
+
+    for (size_t i(0); i < mvKeys.size(); ++i)
+    {
+        int val = (int)MaskLeft_dil.at<uchar>(mvKeys[i].pt.y,mvKeys[i].pt.x);
+        if (val == 1)
+        {
+            _mvKeys.push_back(mvKeys[i]);
+            _mDescriptors.push_back(mDescriptors.row(i));
+        }
+    }
+
+    mvKeys = _mvKeys;
+    mDescriptors = _mDescriptors;
+
+    std::vector<cv::KeyPoint> _mvKeysRight;
+    cv::Mat _mDescriptorsRight;
+
+    for (size_t i(0); i < mvKeysRight.size(); ++i)
+    {
+        int val = (int)MaskRight_dil.at<uchar>(mvKeysRight[i].pt.y,mvKeysRight[i].pt.x);
+        if (val == 1)
+        {
+            _mvKeysRight.push_back(mvKeysRight[i]);
+            _mDescriptorsRight.push_back(mDescriptorsRight.row(i));
+        }
+    }
+
+    mvKeysRight = _mvKeysRight;
+    mDescriptorsRight = _mDescriptorsRight;
 
     Nleft = mvKeys.size();
     Nright = mvKeysRight.size();

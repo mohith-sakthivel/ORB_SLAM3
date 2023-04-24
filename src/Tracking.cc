@@ -21,7 +21,7 @@
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/features2d/features2d.hpp>
-
+#include <unistd.h>
 #include "ORBmatcher.h"
 #include "FrameDrawer.h"
 #include "Converter.h"
@@ -1235,11 +1235,13 @@ void Tracking::SetStepByStep(bool bSet)
 
 
 
-cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRectRight, const double &timestamp, string filename)
+cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRectRight, const cv::Mat &maskLeft, const cv::Mat &maskRight, const double &timestamp, string filename)
 {
     mImGray = imRectLeft;
     cv::Mat imGrayRight = imRectRight;
     mImRight = imRectRight;
+    cv::Mat imMaskLeft = maskLeft;
+    cv::Mat imMaskRight = maskRight;
 
     if(mImGray.channels()==3)
     {
@@ -1268,14 +1270,22 @@ cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRe
         }
     }
 
+    cv::Mat _mImGray = mImGray.clone();
+    mImGray = mImGray*0;
+    _mImGray.copyTo(mImGray,imMaskLeft);
+
+    cv::Mat _imGrayRight = imGrayRight.clone();
+    imGrayRight = imGrayRight*0;
+    _imGrayRight.copyTo(imGrayRight,imMaskRight);
+
     if (mSensor == System::STEREO && !mpCamera2)
-        mCurrentFrame = Frame(mImGray,imGrayRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
+        mCurrentFrame = Frame(mImGray,imGrayRight,imMaskLeft,imMaskRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
     else if(mSensor == System::STEREO && mpCamera2)
-        mCurrentFrame = Frame(mImGray,imGrayRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera,mpCamera2,mTlr);
+        mCurrentFrame = Frame(mImGray,imGrayRight,imMaskLeft,imMaskRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera,mpCamera2,mTlr);
     else if(mSensor == System::IMU_STEREO && !mpCamera2)
-        mCurrentFrame = Frame(mImGray,imGrayRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera,&mLastFrame,*mpImuCalib);
+        mCurrentFrame = Frame(mImGray,imGrayRight,imMaskLeft,imMaskRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera,&mLastFrame,*mpImuCalib);
     else if(mSensor == System::IMU_STEREO && mpCamera2)
-        mCurrentFrame = Frame(mImGray,imGrayRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera,mpCamera2,mTlr,&mLastFrame,*mpImuCalib);
+        mCurrentFrame = Frame(mImGray,imGrayRight,imMaskLeft,imMaskRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera,mpCamera2,mTlr,&mLastFrame,*mpImuCalib);
 
     mCurrentFrame.mNameFile = filename;
     mCurrentFrame.mnDataset = mnNumDataset;
@@ -1291,10 +1301,15 @@ cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRe
 }
 
 
-cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename)
+cv::Mat Tracking::GrabImageRGBD(
+    const cv::Mat &imRGB,const cv::Mat &imD, const cv::Mat &mask, const double &timestamp, string filename,
+    cv::Mat &imRGBOut, cv::Mat &imDOut, cv::Mat &maskOut
+)
 {
     mImGray = imRGB;
     cv::Mat imDepth = imD;
+    cv::Mat imMask = mask;
+    cv::Mat _imRGB = imRGB;
 
     if(mImGray.channels()==3)
     {
@@ -1314,7 +1329,18 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     if((fabs(mDepthMapFactor-1.0f)>1e-5) || imDepth.type()!=CV_32F)
         imDepth.convertTo(imDepth,CV_32F,mDepthMapFactor);
 
-    mCurrentFrame = Frame(mImGray,imDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
+    mCurrentFrame = Frame(mImGray,imDepth,imMask,_imRGB,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
+
+    LightTrack();
+
+    imRGBOut = _imRGB;
+
+    if (!mCurrentFrame.mTcw.empty())
+    {
+        mGeometry.GeometricModelCorrection(mCurrentFrame,imDepth,imMask);
+    }
+
+    mCurrentFrame = Frame(mImGray,imDepth,imMask,imRGBOut,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
 
     mCurrentFrame.mNameFile = filename;
     mCurrentFrame.mnDataset = mnNumDataset;
@@ -1325,13 +1351,26 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
 
     Track();
 
+    if (!mCurrentFrame.mTcw.empty())
+    {
+        mGeometry.InpaintFrames(mCurrentFrame, mImGray, imDepth, imRGBOut, imMask);
+    }
+
+    mGeometry.GeometricModelUpdateDB(mCurrentFrame);
+
+    imDOut = imDepth;
+    imDepth.convertTo(imDOut,CV_16U,1./mDepthMapFactor);
+    maskOut = imMask;
+
     return mCurrentFrame.mTcw.clone();
 }
 
 
-cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename)
+cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const cv::Mat &mask, const double &timestamp, string filename)
 {
-    mImGray = im;
+    mImGray = imRGB;
+    cv::Mat imDepth = imD;
+    cv::Mat imMask = mask;
 
     if(mImGray.channels()==3)
     {
@@ -1348,21 +1387,71 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp,
             cvtColor(mImGray,mImGray,cv::COLOR_BGRA2GRAY);
     }
 
+    if((fabs(mDepthMapFactor-1.0f)>1e-5) || imDepth.type()!=CV_32F)
+        imDepth.convertTo(imDepth,CV_32F,mDepthMapFactor);
+
+    mCurrentFrame = Frame(mImGray,imDepth,imMask,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
+
+    LightTrack();
+
+    mGeometry.GeometricModelCorrection(mCurrentFrame,mImGray,imMask);
+
+    mCurrentFrame = Frame(mImGray,imDepth,imMask,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
+
+    mCurrentFrame.mNameFile = filename;
+    mCurrentFrame.mnDataset = mnNumDataset;
+
+#ifdef REGISTER_TIMES
+    vdORBExtract_ms.push_back(mCurrentFrame.mTimeORB_Ext);
+#endif
+
+    Track();
+
+    mGeometry.GeometricModelUpdateDB(mCurrentFrame);
+
+    return mCurrentFrame.mTcw.clone();
+}
+
+
+cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const cv::Mat &mask, const double &timestamp, string filename)
+{
+    mImGray = im;
+    cv::Mat imMask = mask;
+
+    if(mImGray.channels()==3)
+    {
+        if(mbRGB)
+            cvtColor(mImGray,mImGray,cv::COLOR_RGB2GRAY);
+        else
+            cvtColor(mImGray,mImGray,cv::COLOR_BGR2GRAY);
+    }
+    else if(mImGray.channels()==4)
+    {
+        if(mbRGB)
+            cvtColor(mImGray,mImGray,cv::COLOR_RGBA2GRAY);
+        else
+            cvtColor(mImGray,mImGray,cv::COLOR_BGRA2GRAY);
+    }
+
+    cv::Mat _mImGray = mImGray.clone();
+    mImGray = mImGray*0;
+    _mImGray.copyTo(mImGray,imMask);
+
     if (mSensor == System::MONOCULAR)
     {
         if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET ||(lastID - initID) < mMaxFrames)
-            mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
+            mCurrentFrame = Frame(mImGray,imMask,timestamp,mpIniORBextractor,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
         else
-            mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
+            mCurrentFrame = Frame(mImGray,imMask,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
     }
     else if(mSensor == System::IMU_MONOCULAR)
     {
         if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET)
         {
-            mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,&mLastFrame,*mpImuCalib);
+            mCurrentFrame = Frame(mImGray,imMask,timestamp,mpIniORBextractor,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,&mLastFrame,*mpImuCalib);
         }
         else
-            mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,&mLastFrame,*mpImuCalib);
+            mCurrentFrame = Frame(mImGray,imMask,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,&mLastFrame,*mpImuCalib);
     }
 
     if (mState==NO_IMAGES_YET)
@@ -2173,6 +2262,109 @@ void Tracking::Track()
 }
 
 
+void Tracking::LightTrack()
+{
+    Map* pCurrentMap = mpAtlas->GetCurrentMap();
+    // Get Map Mutex -> Map cannot be changed
+    unique_lock<mutex> lock(pCurrentMap->mMutexMapUpdate);
+    bool useMotionModel = true; //set true
+
+    if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET)
+    {
+        cout << "Light Tracking not working because Tracking is not initialized..." << endl;
+        return;
+    }
+    else
+    {
+        // System is initialized. Track Frame.
+        bool bOK;
+        {
+            // Localization Mode:
+            if(mState==LOST)
+            {
+                bOK = Relocalization(1);
+            }
+            else
+            {
+                if(!mbVO)
+                {
+                    // In last frame we tracked enough MapPoints in the map
+                    if(!mVelocity.empty() && useMotionModel)
+                    {
+                        bool _bOK = false;
+                        bOK = LightTrackWithMotionModel(_bOK);// TODO: check out!!!
+                    }
+                    else
+                    {
+                        bOK = TrackReferenceKeyFrame();
+                    }
+                }
+                else
+                {
+                    // In last frame we tracked mainly "visual odometry" points.
+
+                    // We compute two camera poses, one from motion model and one doing relocalization.
+                    // If relocalization is sucessfull we choose that solution, otherwise we retain
+                    // the "visual odometry" solution.
+
+                    bool bOKMM = false;
+                    bool bOKReloc = false;
+                    vector<MapPoint*> vpMPsMM;
+                    vector<bool> vbOutMM;
+                    cv::Mat TcwMM;
+                    bool lightTracking = false;
+                    bool bVO = false;
+                    if(!mVelocity.empty() && useMotionModel)
+                    {
+                        lightTracking = true;
+                        bOKMM = LightTrackWithMotionModel(bVO); // TODO: check out!!
+                        vpMPsMM = mCurrentFrame.mvpMapPoints;
+                        vbOutMM = mCurrentFrame.mvbOutlier;
+                        TcwMM = mCurrentFrame.mTcw.clone();
+                    }
+                    bOKReloc = Relocalization(1);
+
+                    if(bOKMM && !bOKReloc)
+                    {
+                        mCurrentFrame.SetPose(TcwMM);
+                        mCurrentFrame.mvpMapPoints = vpMPsMM;
+                        mCurrentFrame.mvbOutlier = vbOutMM;
+
+                        if((lightTracking && bVO) || (!lightTracking && mbVO))
+                        {
+                            for(int i =0; i<mCurrentFrame.N; i++)
+                            {
+                                if(mCurrentFrame.mvpMapPoints[i] && !mCurrentFrame.mvbOutlier[i])
+                                {
+                                    mCurrentFrame.mvpMapPoints[i]->IncreaseFound();
+                                }
+                            }
+                        }
+                    }
+
+                    bOK = bOKReloc || bOKMM;
+                }
+            }
+        }
+
+        mCurrentFrame.mpReferenceKF = mpReferenceKF;
+
+        if(!bOK)
+        {
+            if(pCurrentMap->KeyFramesInMap()<=5)
+            {
+                cout << "Light Tracking not working..." << endl;
+                return;
+            }
+        }
+
+        if(!mCurrentFrame.mpReferenceKF)
+            mCurrentFrame.mpReferenceKF = mpReferenceKF;
+
+    }
+}
+
+
 void Tracking::StereoInitialization()
 {
     if(mCurrentFrame.N>500)
@@ -2214,7 +2406,7 @@ void Tracking::StereoInitialization()
         // Insert KeyFrame in the map
         mpAtlas->AddKeyFrame(pKFini);
 
-        // Create MapPoints and asscoiate to KeyFrame
+        // Create MapPoints and associate to KeyFrame
         if(!mpCamera2){
             for(int i=0; i<mCurrentFrame.N;i++)
             {
@@ -2696,6 +2888,71 @@ void Tracking::UpdateLastFrame()
         }
     }
 }
+
+
+bool Tracking::LightTrackWithMotionModel(bool &bVO)
+{
+    ORBmatcher matcher(0.9,true);
+
+    // Update last frame pose according to its reference keyframe
+    // Create "visual odometry" points if in Localization Mode
+    Frame lastFrameBU = mLastFrame;
+    list<MapPoint*> lpTemporalPointsBU = mlpTemporalPoints;
+    UpdateLastFrame(); //TODO: check out!
+
+    mCurrentFrame.SetPose(mVelocity*mLastFrame.mTcw);
+
+    fill(mCurrentFrame.mvpMapPoints.begin(),mCurrentFrame.mvpMapPoints.end(),static_cast<MapPoint*>(NULL)); //TODO:Checkout
+
+    // Project points seen in previous frame
+    int th;
+    if(mSensor!=System::STEREO)
+        th=15;
+    else
+        th=7;
+    int nmatches = matcher.SearchByProjection(mCurrentFrame,mLastFrame,th,mSensor==System::MONOCULAR);//TODO:Checkout
+
+    // If few matches, uses a wider window search
+    if(nmatches<20)
+    {
+        fill(mCurrentFrame.mvpMapPoints.begin(),mCurrentFrame.mvpMapPoints.end(),static_cast<MapPoint*>(NULL));//TODO:Checkout
+        nmatches = matcher.SearchByProjection(mCurrentFrame,mLastFrame,2*th,mSensor==System::MONOCULAR);//TODO:Checkout
+    }
+
+    if(nmatches<20)
+        return false;
+
+    // Optimize frame pose with all matches
+    Optimizer::PoseOptimization(&mCurrentFrame);
+
+    // Discard outliers
+    int nmatchesMap = 0;
+    for(int i =0; i<mCurrentFrame.N; i++)
+    {
+        if(mCurrentFrame.mvpMapPoints[i])
+        {
+            if(mCurrentFrame.mvbOutlier[i])
+            {
+                MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
+
+                mCurrentFrame.mvpMapPoints[i]=static_cast<MapPoint*>(NULL);
+                mCurrentFrame.mvbOutlier[i]=false;
+                pMP->mbTrackInView = false;
+                pMP->mnLastFrameSeen = mCurrentFrame.mnId;
+                nmatches--;
+            }
+            else if(mCurrentFrame.mvpMapPoints[i]->Observations()>0)
+                nmatchesMap++;
+        }
+    }
+    mLastFrame = lastFrameBU;
+    mlpTemporalPoints = lpTemporalPointsBU;
+
+    bVO = nmatchesMap<10;
+    return nmatches>20;
+
+}
+
 
 bool Tracking::TrackWithMotionModel()
 {
@@ -3465,7 +3722,7 @@ void Tracking::UpdateLocalKeyFrames()
     }
 }
 
-bool Tracking::Relocalization()
+bool Tracking::Relocalization(int update)
 {
     Verbose::PrintMess("Starting relocalization", Verbose::VERBOSITY_NORMAL);
     // Compute Bag of Words Vector
@@ -3625,7 +3882,7 @@ bool Tracking::Relocalization()
     }
     else
     {
-        mnLastRelocFrameId = mCurrentFrame.mnId;
+        if (update == 0) mnLastRelocFrameId = mCurrentFrame.mnId;
         cout << "Relocalized!!" << endl;
         return true;
     }

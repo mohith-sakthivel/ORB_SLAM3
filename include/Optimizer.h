@@ -25,7 +25,7 @@
 #include "KeyFrame.h"
 #include "LoopClosing.h"
 #include "Frame.h"
-
+#include "Geometry.h"
 #include <math.h>
 
 #include "Thirdparty/g2o/g2o/types/types_seven_dof_expmap.h"
